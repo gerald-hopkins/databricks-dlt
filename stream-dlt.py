@@ -62,12 +62,12 @@ def joined_vw():
 
 # COMMAND ----------
 
-from pyspark.sql.functions import current_timestamp,count
+from pyspark.sql.functions import current_timestamp,count,sum
 
 @dlt.table(
     table_properties = {'quality': 'silver'},
     comment = 'joined silver table',
-    name = 'joined_dlt_silver'
+    name = 'orders_dlt_silver'
 )
 def joined_dlt_silver():
     df = spark.read.table('LIVE.joined_vw').withColumn('_insert_date', current_timestamp())
@@ -77,7 +77,7 @@ def joined_dlt_silver():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Find the order count by c_mktsegment
+# MAGIC ## Find the order count and sum of total price by c_mktsegment
 
 # COMMAND ----------
 
@@ -86,9 +86,9 @@ def joined_dlt_silver():
     comment = 'aggregated gold table',
 )
 def orders_agg_gold():
-    df = spark.read.table('LIVE.joined_dlt_silver')
+    df = spark.read.table('LIVE.orders_dlt_silver')
 
-    df_final = df.groupBy('c_mktsegment').agg(count('o_orderkey').alias('orders_count')).withColumn('_insert_date', current_timestamp())
+    df_final = df.groupBy('c_mktsegment').agg(count('o_orderkey').alias('orders_count'),sum('o_totalprice').alias('sales_sum')).withColumn('_insert_date', current_timestamp())
 
     return df_final
 

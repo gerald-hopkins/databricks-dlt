@@ -20,4 +20,26 @@
 # COMMAND ----------
 
 # MAGIC %sql
+# MAGIC SELECT COUNT(1) FROM bronze.orders_dlt_raw
+
+# COMMAND ----------
+
+# MAGIC %sql
 # MAGIC SELECT * FROM bronze.customer_dlt_raw
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC SELECT COUNT(1) FROM bronze.orders_dlt_raw
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Add records to stream table so we can process INCREMENTAL data
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC INSERT INTO bronze.orders_dlt_raw
+# MAGIC SELECT * FROM samples.tpch.orders
+# MAGIC LIMIT 10000
