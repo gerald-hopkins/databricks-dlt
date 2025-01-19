@@ -4,7 +4,16 @@ import dlt
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Create a streaming table for Orders
+# MAGIC ## set variable to get configuration input variable for order status so we can create an gold agg table for each order status
+
+# COMMAND ----------
+
+_order_status = spark.conf.get('custom.orderStatus', 'NA')
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## BRONZE Create a streaming table for Orders
 
 # COMMAND ----------
 
@@ -19,6 +28,55 @@ import dlt
 )
 def orders_dlt_bronze():
     df = spark.readStream.table('gerald_hopkins_workspace.bronze.orders_dlt_raw')
+    return df
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## create a streaming table for reading order files from S3 volume
+
+# COMMAND ----------
+
+@dlt.table(
+  table_properties = {'quality': 'bronze'},
+  comment = 'orders autoloader table',
+  name = 'orders_autoloader_dlt_bronze'
+)
+def func():
+  df = (
+    spark
+    .readStream
+    .format("cloudFiles")
+    .option('cloudFiles.schemaHints', 'o_orderkey long,o_custkey long,o_orderstatus string,o_totalprice decimal(18,2),o_orderdate date,o_orderpriority string,o_clerk string,o_shippriority integer,o_comment string')
+    .option("cloudFiles.format", "csv")
+    .option('pathGlobFilter', '*.csv')
+    .option('cloudFiles.schemaLocation', '/Volumes/gerald_hopkins_workspace/etl/landing/autoloader/schemas/1/')
+    .option('cloudFiles.schemaEvolutionMode','none')
+    .load('/Volumes/gerald_hopkins_workspace/etl/landing/files/')
+    )
+  return df
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## create a streaming union table for the two streaming orders tables
+
+# COMMAND ----------
+
+dlt.create_streaming_table('orders_dlt_union_bronze')
+
+@dlt.append_flow(
+    target = 'orders_dlt_union_bronze'
+)
+def order_delta_append():
+    df = spark.readStream.table('LIVE.orders_dlt_bronze')
+    return df
+
+@dlt.append_flow(
+    target = 'orders_dlt_union_bronze'
+)
+def order_autoloader_append():
+    df = spark.readStream.table('LIVE.orders_autoloader_dlt_bronze')
     return df
 
 # COMMAND ----------
@@ -49,16 +107,21 @@ def cust_dlt_bronze():
 # COMMAND ----------
 
 @dlt.view(
-    comment = 'join customer and address bronze tables'
+    comment = 'join customer and orders unioned bronze tables'
 )
 def joined_vw():
     df_c = spark.read.table('LIVE.customer_dlt_bronze')
-    df_o = spark.read.table('LIVE.orders_dlt_bronze')
+    df_o = spark.read.table('LIVE.orders_dlt_union_bronze')
                             
     df_join = df_o.join(df_c, how = 'left_outer', on = df_c.c_custkey == df_o.o_custkey)
 
     return df_join
 
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## SILVER create and load table for joined orders and customer data
 
 # COMMAND ----------
 
@@ -77,7 +140,7 @@ def joined_dlt_silver():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Find the order count and sum of total price by c_mktsegment
+# MAGIC ## GOLD Find the order count and sum of total price by c_mktsegment
 
 # COMMAND ----------
 
@@ -85,10 +148,48 @@ def joined_dlt_silver():
     table_properties = {'quality': 'gold'},
     comment = 'aggregated gold table',
 )
-def orders_agg_gold():
+def orders_dlt_agg_gold():
     df = spark.read.table('LIVE.orders_dlt_silver')
 
     df_final = df.groupBy('c_mktsegment').agg(count('o_orderkey').alias('orders_count'),sum('o_totalprice').alias('sales_sum')).withColumn('_insert_date', current_timestamp())
 
     return df_final
 
+
+# COMMAND ----------
+
+#for _status in _order_status.split(','):
+ #   @dlt.table(
+#        table_properties = {'quality': 'gold'},
+ #       comment = f'aggregated gold table for {_status}',
+ #       name = f'orders_dlt_agg_gold_{_status}'
+ #   )
+ #   def func():
+ #       df = spark.read.table('LIVE.orders_dlt_silver')
+#
+#        df_final = df.where(f'o_orderstatus = "{_status}"').groupBy('c_mktsegment').agg(count('o_orderkey').alias('orders_count'),sum('o_totalprice').alias('sales_sum')).withColumn('_insert_date', current_timestamp())
+ #       return df_final
+
+# COMMAND ----------
+
+for _status in _order_status.split(','):
+    def create_table(status):
+        @dlt.table(
+            table_properties={'quality': 'gold'},
+            comment=f'aggregated gold table for {status}',
+            name=f'orders_dlt_agg_gold_{status}'
+        )
+        def func():
+            df = spark.read.table('LIVE.orders_dlt_silver')
+            df_final = (df.where(f'o_orderstatus = "{status}"')
+                          .groupBy('c_mktsegment')
+                          .agg(
+                              count('o_orderkey').alias('orders_count'),
+                              sum('o_totalprice').alias('sales_sum')
+                          )
+                          .withColumn('_insert_date', current_timestamp()))
+            return df_final
+        return func
+
+    # Call the create_table function to register the table
+    create_table(_status)

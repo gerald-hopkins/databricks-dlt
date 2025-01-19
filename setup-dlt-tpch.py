@@ -43,3 +43,23 @@
 # MAGIC INSERT INTO bronze.orders_dlt_raw
 # MAGIC SELECT * FROM samples.tpch.orders
 # MAGIC LIMIT 10000
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## create a managed volume to hold source files
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC CREATE VOLUME IF NOT EXISTS etl.landing
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## add folders for files and schema
+
+# COMMAND ----------
+
+dbutils.fs.mkdirs('/Volumes/gerald_hopkins_workspace/etl/landing/files')
+dbutils.fs.mkdirs('/Volumes/gerald_hopkins_workspace/etl/landing/autoloader/schemas/')
