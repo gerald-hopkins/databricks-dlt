@@ -1,5 +1,6 @@
 # Databricks notebook source
 import dlt
+from pyspark.sql.functions import expr
 
 # COMMAND ----------
 
@@ -13,22 +14,56 @@ _order_status = spark.conf.get('custom.orderStatus', 'NA')
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Create Data Quality Rules
+
+# COMMAND ----------
+
+_order_rules = {
+    "Valid Order Status":"o_orderstatus IN ('O','F','P')",
+    "Valid Order Price":"o_totalprice > 0.0"
+}
+
+_customer_rules = {
+    "Valid Market Segment":"c_mktsegment IS NOT NULL"
+}
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## BRONZE Create a streaming table for Orders
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### stream orders data from Orders_dlt_raw
+# MAGIC ### stream orders data from Orders_dlt_raw; Data Quality Rules for Orders
 
 # COMMAND ----------
+
+from pyspark.sql.functions import col
 
 @dlt.table(
     table_properties = {'quality': 'bronze'},
     comment = 'orders bronze table'
 )
+@dlt.expect_all_or_drop(_order_rules)  
 def orders_dlt_bronze():
     df = spark.readStream.table('gerald_hopkins_workspace.bronze.orders_dlt_raw')
+    df.printSchema()
     return df
+
+
+
+# # Capture dropped records for remediation
+# @dlt.table(
+#     table_properties={"quality": "bronze"},
+#     comment="Dropped records for remediation",
+# )
+# def orders_dlt_bronze_dropped():
+#     df = dlt.read_stream('orders_dlt_bronze')
+
+#     # Use the `_expectations` column to filter dropped records
+#     dropped_records = df.filter(col("_expectations").isNotNull())
+#     return dropped_records
 
 # COMMAND ----------
 
@@ -81,7 +116,49 @@ def order_autoloader_append():
 
 # COMMAND ----------
 
-## Create a materialized view for Customer
+# MAGIC %md
+# MAGIC ## Apply Order Data Quality in a temporary table
+
+# COMMAND ----------
+
+quarantine_rules = "NOT({0})".format(" AND ".join(_order_rules.values()))
+
+# @dlt.view
+# def raw_trips_data():
+#   return spark.readStream.table("samples.nyctaxi.trips")
+
+@dlt.table(
+  temporary=True,
+  partition_cols=["_is_quarantined"],
+)
+@dlt.expect_all(_order_rules)
+def order_dlt_quarantine():
+  return (
+    dlt.readStream("orders_dlt_union_bronze").withColumn("_is_quarantined", expr(quarantine_rules))
+  )
+
+@dlt.view
+def valid_order_data():
+  return dlt.readStream("order_dlt_quarantine").filter("_is_quarantined=false")
+
+@dlt.view
+def invalid_order_data():
+  return dlt.readStream("order_dlt_quarantine").filter("_is_quarantined=true")
+
+# COMMAND ----------
+
+@dlt.table(
+    table_properties = {'quality':'bronze'},
+    comment = 'order quarantined data'
+)
+def order_dlt_quarantine_vw():
+    df = dlt.readStream("invalid_order_data")
+    return df
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Create a materialized view for Customer
 
 # COMMAND ----------
 
@@ -102,13 +179,14 @@ def order_autoloader_append():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## create a materialized view for Customer
+# MAGIC ## create a materialized view for Customer; Data Quality Rules for Customer
 
 # COMMAND ----------
 
 @dlt.view(
     comment = 'customer bronze view',
 )
+@dlt.expect_all(_customer_rules)
 def customer_dlt_bronze_vw():
     df = spark.readStream.table('gerald_hopkins_workspace.bronze.customer_dlt_raw')
     return df
@@ -119,8 +197,6 @@ def customer_dlt_bronze_vw():
 # MAGIC ## SCD 1 Customer
 
 # COMMAND ----------
-
-from pyspark.sql.functions import expr
 
 dlt.create_streaming_table('customer_dlt_scd1_bronze')
 
@@ -164,7 +240,7 @@ dlt.apply_changes(
 )
 def joined_vw():
     df_c = spark.read.table('LIVE.customer_dlt_scd2_bronze').where('__END_AT = NULL')
-    df_o = spark.read.table('LIVE.orders_dlt_union_bronze')
+    df_o = spark.readStream.table('LIVE.valid_order_data')
                             
     df_join = df_o.join(df_c, how = 'left_outer', on = df_c.c_custkey == df_o.o_custkey)
 
@@ -180,13 +256,13 @@ def joined_vw():
 
 from pyspark.sql.functions import current_timestamp,count,sum
 
-@dlt.table(
-    table_properties = {'quality': 'silver'},
+@dlt.view(
+    #table_properties = {'quality': 'silver'},
     comment = 'joined silver table',
     name = 'orders_dlt_silver'
 )
 def joined_dlt_silver():
-    df = spark.read.table('LIVE.joined_vw').withColumn('_insert_date', current_timestamp())
+    df = spark.readStream.table('LIVE.joined_vw').withColumn('_insert_date', current_timestamp())
     return df
 
 
@@ -197,12 +273,12 @@ def joined_dlt_silver():
 
 # COMMAND ----------
 
-@dlt.table(
-    table_properties = {'quality': 'gold'},
+@dlt.view(
+    #table_properties = {'quality': 'gold'},
     comment = 'aggregated gold table',
 )
 def orders_dlt_agg_gold():
-    df = spark.read.table('LIVE.orders_dlt_silver')
+    df = spark.readStream.table('LIVE.orders_dlt_silver')
 
     df_final = df.groupBy('c_mktsegment').agg(count('o_orderkey').alias('orders_count'),sum('o_totalprice').alias('sales_sum')).withColumn('_insert_date', current_timestamp())
 
@@ -213,13 +289,13 @@ def orders_dlt_agg_gold():
 
 for _status in _order_status.split(','):
     def create_table(status):
-        @dlt.table(
-            table_properties={'quality': 'gold'},
+        @dlt.view(
+            #table_properties={'quality': 'gold'},
             comment=f'aggregated gold table for {status}',
             name=f'orders_dlt_agg_gold_{status}'
         )
         def func():
-            df = spark.read.table('LIVE.orders_dlt_silver')
+            df = spark.readStream.table('LIVE.orders_dlt_silver')
             df_final = (df.where(f'o_orderstatus = "{status}"')
                           .groupBy('c_mktsegment')
                           .agg(

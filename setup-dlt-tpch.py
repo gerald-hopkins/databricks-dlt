@@ -137,3 +137,24 @@ dbutils.fs.mkdirs('/Volumes/gerald_hopkins_workspace/etl/landing/autoloader/sche
 # MAGIC VALUES (
 # MAGIC   null,'Customer#000412450','wwodlnaoetao',20,'30-293-656-4951',4406.28,'BUILDING','Old Record for Backloading', 'T',current_timestamp()
 # MAGIC )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## insert data that violates Data Quality Rules
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC INSERT INTO bronze.orders_dlt_raw
+# MAGIC VALUES 
+# MAGIC   (99999,227285,'NA',162169.66,'1995-10-11','1-URGENT','Clerk#000000432',0,'Demo record 1 for expectations test'),
+# MAGIC   (99999,227285,'O',-100,'1995-10-11','1-URGENT','Clerk#000000432',0,'Demo record 2 for expectations test'),
+# MAGIC   (99999,227285,null,999,'1995-10-11','1-URGENT','Clerk#000000432',0,'Demo record 3 for expectations test')
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC INSERT INTO bronze.customer_dlt_raw
+# MAGIC VALUES
+# MAGIC   (9999,'Customer#000412450','fdaljoei',20,'30-293-696-5047',4406.28,null,'Demo record for Expectation test','I',current_timestamp())
